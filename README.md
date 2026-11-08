@@ -110,7 +110,7 @@ See [docs/cli.md](docs/cli.md) for the commands, the JSON schema, the exit codes
 
 ### Search
 
-`/` searches all the notes as you type and jumps to the match; `lazymark search` and the MCP tool `search_notes` do the same without the interface (see [docs/cli.md](docs/cli.md)).
+`/` searches all the notes as you type and jumps to the match; press `Tab` to switch to filename-only search. `lazymark search` and the MCP tool `search_notes` search note contents without the interface (see [docs/cli.md](docs/cli.md)).
 
 <img src="assets/readme/feature-search.gif" alt="Searching all the notes while typing and jumping to a match" width="100%">
 

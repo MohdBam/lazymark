@@ -97,6 +97,50 @@ func TestSearchPopupLiveResults(t *testing.T) {
 	}
 }
 
+func TestSearchTitlesModeFiltersNestedNotesAndOpensResult(t *testing.T) {
+	m, dir := searchModel(t)
+	want := filepath.Join(dir, "proyectos", "web", "Zorzalino-Título.MD")
+	if err := os.WriteFile(want, []byte("contenido sin el término buscado"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	typeSearch(m, "zorzalino")
+	sp := m.c.top().(*searchPopup)
+	if sp.n != 2 {
+		t.Fatalf("All mode results = %d, want existing body matches", sp.n)
+	}
+	query := sp.input.Value()
+	_, cmd := m.Update(keyMsg("tab"))
+	drive(m, cmd)
+	if sp.mode != searchTitles || sp.input.Value() != query {
+		t.Fatalf("Tab mode/query = %v/%q; want Titles/%q", sp.mode, sp.input.Value(), query)
+	}
+	if sp.n != 1 || sp.matches[0].Path != want {
+		t.Fatalf("Titles results = %+v, want only nested title match %s", sp.matches, want)
+	}
+	if out := plain(m); (!strings.Contains(out, "Titles") && !strings.Contains(out, "Títulos")) || !strings.Contains(out, "proyectos/web/Zorzalino-Título.MD") {
+		t.Errorf("active mode and nested filename should be visible:\n%s", out)
+	}
+	sp.input.SetValue("md")
+	drive(m, sp.schedule())
+	if sp.n != 0 {
+		t.Errorf("Titles mode must exclude .md extension: matches=%+v", sp.matches)
+	}
+	sp.input.SetValue(query)
+	drive(m, sp.schedule())
+	_, cmd = m.Update(keyMsg("tab"))
+	drive(m, cmd)
+	if sp.mode != searchAll || sp.input.Value() != query || sp.n != 2 {
+		t.Errorf("switching back should preserve query and full-text results: mode=%v query=%q results=%d", sp.mode, sp.input.Value(), sp.n)
+	}
+	_, cmd = m.Update(keyMsg("tab"))
+	drive(m, cmd)
+	_, cmd = m.Update(keyMsg("enter"))
+	drive(m, cmd)
+	if m.c.top() != nil || m.previewNote() == nil || m.previewNote().Path != want {
+		t.Errorf("Enter should open title result %s; popup=%v preview=%+v", want, m.c.top(), m.previewNote())
+	}
+}
+
 // TestSearchIgnoresStaleResultsAndCancels (C.1): los resultados de un texto anterior no pisan a los del actual, y cerrar la búsqueda
 // cancela lo que estaba corriendo.
 func TestSearchIgnoresStaleResultsAndCancels(t *testing.T) {

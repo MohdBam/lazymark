@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"github.com/MathiasDrizzy/lazymark/internal/ui/views"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -18,11 +17,11 @@ import (
 	"github.com/MathiasDrizzy/lazymark/internal/storage"
 	"github.com/MathiasDrizzy/lazymark/internal/ui/textwidth"
 	"github.com/MathiasDrizzy/lazymark/internal/ui/theme"
+	"github.com/MathiasDrizzy/lazymark/internal/ui/views"
 )
 
-// La búsqueda de texto completo (`/`): un popup con el campo de texto y los resultados en vivo (nota, línea y contexto, con lo hallado
-// resaltado). No hay índice: cada cambio del texto cancela la búsqueda anterior y, pasada una pausa corta, lanza otra en una
-// goroutine (internal/search, concurrente y cancelable), así que seguir escribiendo o navegar nunca espera a una búsqueda.
+// La búsqueda (`/`) ofrece resultados de texto completo o de nombres de archivo. No hay índice: cada cambio del texto o del modo cancela
+// la búsqueda anterior y, pasada una pausa corta, lanza otra en una goroutine, así que seguir escribiendo o navegar nunca espera.
 const (
 	searchDebounce = 70 * time.Millisecond // pausa tras la última tecla antes de buscar
 	searchTimeout  = 10 * time.Second      // una búsqueda no se queda trabajando más que esto
@@ -44,6 +43,7 @@ type searchPopup struct {
 	popupList
 	c       *core
 	input   textinput.Model
+	mode    searchMode
 	gen     int // cambia con cada texto: lo que llega de una generación anterior se ignora
 	cancel  context.CancelFunc
 	state   searchState
@@ -51,6 +51,13 @@ type searchPopup struct {
 	matches []search.Match
 	errText string
 }
+
+type searchMode int
+
+const (
+	searchAll searchMode = iota
+	searchTitles
+)
 
 type searchState int
 
@@ -89,6 +96,9 @@ func (p *searchPopup) close() {
 
 func (p *searchPopup) handle(_ Action, msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	switch msg.String() {
+	case "tab":
+		p.mode = (p.mode + 1) % 2
+		return p.schedule(), false
 	case "enter":
 		return p.jump()
 	case "up", "ctrl+p":
@@ -149,14 +159,52 @@ func (p *searchPopup) run(gen int) tea.Cmd {
 		return nil
 	}
 	q := strings.TrimSpace(p.input.Value())
+	mode := p.mode
 	ctx, cancel := context.WithTimeout(context.Background(), searchTimeout)
 	p.cancel = cancel
 	store := p.c.store
 	return func() tea.Msg {
 		defer cancel()
-		res, err := search.Run(ctx, store, q, search.Options{})
+		var res search.Result
+		var err error
+		if mode == searchTitles {
+			res = searchTitlesInNotes(ctx, store, q)
+		} else {
+			res, err = search.Run(ctx, store, q, search.Options{})
+		}
 		return searchDoneMsg{gen: gen, query: q, res: res, err: err}
 	}
+}
+
+// searchTitlesInNotes matches filenames only. NotePaths walks nested note folders without reading note contents.
+func searchTitlesInNotes(ctx context.Context, store *storage.Storage, query string) search.Result {
+	start := time.Now()
+	query = strings.ToLower(query)
+	paths := store.NotePaths()
+	var res search.Result
+	for _, path := range paths {
+		if ctx.Err() != nil {
+			break
+		}
+		res.Files++
+		base := filepath.Base(path)
+		title := strings.TrimSuffix(base, filepath.Ext(base))
+		if !strings.Contains(strings.ToLower(title), query) {
+			continue
+		}
+		rel, err := filepath.Rel(store.BaseDir, path)
+		if err != nil {
+			rel = path
+		}
+		title = textwidth.NoControl(title)
+		res.Matches = append(res.Matches, search.Match{
+			Path: path, Rel: textwidth.NoControl(filepath.ToSlash(rel)), Title: title, Line: 1,
+			Text: title, Start: 0, End: len(title),
+		})
+	}
+	res.TimedOut = ctx.Err() == context.DeadlineExceeded
+	res.Elapsed = time.Since(start)
+	return res
 }
 
 // done recibe los resultados; los de una generación anterior se tiran.
@@ -203,6 +251,9 @@ func (p *searchPopup) status() string {
 	case p.errText != "":
 		return p.errText
 	case p.state == searchIdle:
+		if p.mode == searchTitles {
+			return i18n.T("Escribe para buscar nombres de notas", "Type to search note filenames")
+		}
 		return i18n.T("Escribe para buscar en todas las notas", "Type to search all the notes")
 	case p.state == searchWorking:
 		return i18n.T("Buscando…", "Searching…")
@@ -221,15 +272,24 @@ func (p *searchPopup) status() string {
 
 func (p *searchPopup) render(l Layout) string {
 	w := popupWidth(l, 96)
-	p.input.SetWidth(w - 8)
-	field := accent("/ ") + lipgloss.NewStyle().Foreground(theme.ColorText).Render(p.input.View())
+	mode := i18n.T("Todo el texto", "All content")
+	if p.mode == searchTitles {
+		mode = i18n.T("Títulos", "Titles")
+	}
+	prefix := "/ [" + mode + "] "
+	p.input.SetWidth(w - textwidth.Width(prefix) - 6)
+	field := accent(prefix) + lipgloss.NewStyle().Foreground(theme.ColorText).Render(p.input.View())
 	p.top = 3
 	p.height = clamp(max(p.n, 1), 1, min(12, max(1, l.H-10)))
 	lines := []string{field, dim(p.status())}
 	lines = append(lines, p.rows(w-3, func(i int) string {
 		m := p.matches[i]
-		where := dim(fmt.Sprintf("%s:%d", m.Rel, m.Line))
-		room := w - 3 - 4 - textwidth.Width(fmt.Sprintf("%s:%d", m.Rel, m.Line))
+		location := fmt.Sprintf("%s:%d", m.Rel, m.Line)
+		if p.mode == searchTitles {
+			location = m.Rel
+		}
+		where := dim(location)
+		room := w - 3 - 4 - textwidth.Width(location)
 		text, s, e := glyphDates(m.Text, m.Start, m.End) // sin emojis de fecha ni sintaxis Dataview en pantalla (antes de cortar: un corte no deja medio campo)
 		if textwidth.Width(text) > room {                // el contexto se corta por la derecha; lo hallado se ve si cabe
 			text = textwidth.Truncate(text, max(8, room), "…")
@@ -239,7 +299,7 @@ func (p *searchPopup) render(l Layout) string {
 		}
 		return where + "  " + highlight(text, s, e)
 	})...)
-	return theme.RenderPopup(i18n.T("Buscar", "Search"), "[Enter] "+i18n.T("ir", "go")+" · "+escHint, lines, w)
+	return theme.RenderPopup(i18n.T("Buscar", "Search"), "[Tab] "+i18n.T("cambiar modo", "Switch mode")+" · [Enter] "+i18n.T("ir", "go")+" · "+escHint, lines, w)
 }
 
 // jumpTo lleva la vista a una coincidencia: selecciona la nota en el panel Notas (abriendo sus carpetas y quitando el filtro si la

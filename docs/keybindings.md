@@ -4,6 +4,8 @@
 
 Press `?` inside lazymark to see the keys of the panel you are in. The same list is generated from the same keymap, so it never disagrees with this page.
 
+In Search (`/`), press `Tab` to switch between searching all note content and matching note filenames only.
+
 `h` `j` `k` `l` `g` `G` `Ctrl+U` and `Ctrl+D` are Vim-style shortcuts. They work by default and can be turned off in Settings (Keybindings: `Lazy`). Nothing in lazymark needs Vim modes.
 
 ## Global
